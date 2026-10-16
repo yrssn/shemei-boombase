@@ -2,10 +2,12 @@
 
 优先使用 /embed/captioned/ 页面（无需登录），失败时回退到帖子页的 og:description / og:image。
 """
+import asyncio
 import html
 import json
 import logging
 import re
+import urllib.request
 from urllib.parse import urlparse
 
 import httpx
@@ -16,6 +18,8 @@ from .sentiment import analyze
 
 logger = logging.getLogger("uvicorn.error")
 NETWORK_ERRORS = ("ConnectError", "ConnectTimeout", "ReadTimeout", "ProxyError", "RemoteProtocolError", "ReadError")
+RETRIES = 2
+BLOCKED_HINT = "可尝试：切换代理节点（换个地区的 IP）后重试，或在 backend/.env 配置 IG_SESSIONID 使用登录态抓取"
 NETWORK_HINT = "请在 backend/.env 配置 HTTP_PROXY_URL（如 Clash 填 http://127.0.0.1:7890，v2rayN 填 http://127.0.0.1:10809）后重启后端"
 SHORTCODE_RE = re.compile(r"^/(?:[\w.]+/)?(p|reel|reels|tv)/([A-Za-z0-9_-]+)/?")
 SHARE_RE = re.compile(r"^/share/(?:p/|reel/|reels/)?[A-Za-z0-9_-]+/?")
@@ -67,7 +71,7 @@ def parse_shortcode(url: str) -> str:
 async def resolve_share_link(client: httpx.AsyncClient, url: str) -> str:
     """分享短链 /share/xxx 会 302 到真实帖子地址，跟随跳转后再解析。"""
     try:
-        resp = await client.get(url)
+        resp = await _request(client, "GET", url)
     except httpx.HTTPError as exc:
         logger.warning("解析分享链接失败 %s：%r", url, exc)
         raise HTTPException(502, f"解析分享链接失败：{exc.__class__.__name__}，{NETWORK_HINT}")
@@ -204,10 +208,41 @@ def _parse_og(page: str) -> tuple[str, str, list[MediaItem]]:
     return author, caption.strip(), items
 
 
+async def _request(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
+    """连接类错误（网络抖动、代理节点不稳）自动重试。"""
+    for attempt in range(RETRIES + 1):
+        try:
+            return await client.request(method, url, **kwargs)
+        except httpx.TransportError:
+            if attempt == RETRIES:
+                raise
+            await asyncio.sleep(1 + attempt)
+    raise RuntimeError("unreachable")
+
+
+def _describe(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        reason = {401: "需要登录", 403: "被拒绝", 429: "请求过于频繁，IP 被限流"}.get(code, "")
+        return f"HTTP {code}{f'（{reason}）' if reason else ''}"
+    if isinstance(exc, httpx.TransportError):
+        return f"{exc.__class__.__name__}（连不上 Instagram）"
+    if isinstance(exc, ValueError):
+        return "返回的不是 JSON（多半被重定向到登录页）"
+    return f"返回数据格式不符（{exc.__class__.__name__}）"
+
+
+def _empty_reason(resp: httpx.Response) -> str:
+    final = str(resp.url)
+    if "/accounts/login" in final or "/challenge" in final:
+        return "被重定向到登录页"
+    return "页面里没有帖子数据（可能是登录墙或当前 IP 被风控）"
+
+
 async def _fetch_graphql(client: httpx.AsyncClient, shortcode: str) -> tuple[str, str, list[MediaItem]]:
     """未登录可用的 GraphQL 接口（doc_id 为 Instagram 网页端使用的查询 ID）。"""
-    resp = await client.post(
-        "https://www.instagram.com/graphql/query",
+    resp = await _request(
+        client, "POST", "https://www.instagram.com/graphql/query",
         data={
             "doc_id": "8845758582119845",
             "variables": json.dumps({"shortcode": shortcode}),
@@ -226,8 +261,8 @@ async def _fetch_with_session(client: httpx.AsyncClient, shortcode: str,
                               sessionid: str) -> tuple[str, str, list[MediaItem]]:
     """登录态接口：需要浏览器 cookie 中的 sessionid，最可靠。"""
     media_id = shortcode_to_media_id(shortcode)
-    resp = await client.get(
-        f"https://www.instagram.com/api/v1/media/{media_id}/info/",
+    resp = await _request(
+        client, "GET", f"https://www.instagram.com/api/v1/media/{media_id}/info/",
         headers={"User-Agent": UA, "X-IG-App-ID": IG_APP_ID, "Accept": "*/*"},
         cookies={"sessionid": sessionid},
     )
@@ -268,7 +303,7 @@ async def fetch_post(url: str, proxy: str = "", sessionid: str = "") -> PostCont
             try:
                 collect("session", *await _fetch_with_session(client, shortcode, sessionid))
             except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-                errors.append(f"session: {exc.__class__.__name__}（sessionid 可能已失效）")
+                errors.append(f"session: {_describe(exc)}（sessionid 可能已失效）")
         embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
         for candidate, parser, name, ua in (
             (embed_url, _parse_embed, "embed", BOT_UA),
@@ -278,26 +313,31 @@ async def fetch_post(url: str, proxy: str = "", sessionid: str = "") -> PostCont
             if caption and media:
                 break
             try:
-                resp = await client.get(candidate, headers={"User-Agent": ua})
+                resp = await _request(client, "GET", candidate, headers={"User-Agent": ua})
                 if resp.status_code >= 400:
                     errors.append(f"{name}: HTTP {resp.status_code}")
                     continue
-                collect(name, *parser(resp.text))
+                a, c, m = parser(resp.text)
+                if not (c or m):
+                    errors.append(f"{name}: {_empty_reason(resp)}")
+                collect(name, a, c, m)
             except httpx.HTTPError as exc:
-                errors.append(f"{name}: {exc.__class__.__name__}")
+                errors.append(f"{name}: {_describe(exc)}")
         if not (caption and media):
             try:
                 collect("graphql", *await _fetch_graphql(client, shortcode))
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                errors.append(f"graphql: {exc.__class__.__name__}")
+                errors.append(f"graphql: {_describe(exc)}")
     if not media and og_media:
         media, media_source = og_media, "og"
     if not caption and not media:
-        detail = "；".join(errors) if errors else "帖子可能为私密账号、链接无效或当前服务器 IP 被 Instagram 限制（可配置 HTTP_PROXY_URL）"
-        logger.warning("抓取失败 %s（代理：%s）：%s", url, proxy or "未配置", detail)
+        detail = "；".join(errors) if errors else "帖子可能为私密账号、链接无效或当前 IP 被 Instagram 限制"
+        system_proxy = urllib.request.getproxies().get("https", "") if not proxy else ""
+        logger.warning("抓取失败 %s（HTTP_PROXY_URL：%s，系统代理：%s）：%s", url, proxy or "未配置",
+                       system_proxy or "无", detail)
         if errors and all(any(n in e for n in NETWORK_ERRORS) for e in errors):
             raise HTTPException(502, f"无法连接 Instagram，{NETWORK_HINT if not proxy else f'当前代理 {proxy} 不可用，请确认代理软件已开启且端口正确'}（{detail}）")
-        raise HTTPException(502, f"抓取失败：{detail}")
+        raise HTTPException(502, f"抓取失败：{detail}。{BLOCKED_HINT}")
     for idx, item in enumerate(media, start=1):
         ext = "mp4" if item.type == "video" else "jpg"
         item.filename = f"{shortcode}_{idx:02d}.{ext}" if len(media) > 1 else f"{shortcode}.{ext}"
