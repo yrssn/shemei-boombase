@@ -23,7 +23,7 @@ cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # 按需修改 SECRET_KEY、APP_USERS、DATABASE_URL、企业微信参数
-uvicorn app.main:app --reload --port 8000
+python run.py                # 或 uvicorn app.main:app --reload --port 8000
 ```
 
 接口（除登录外均需 `Authorization: Bearer <token>`）：
