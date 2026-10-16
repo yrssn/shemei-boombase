@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import auth, instagram, wecom
+from . import auth, instagram, media, wecom
 from .config import Settings, get_settings
 from .schemas import ExtractRequest, HistoryItem, PostContent, WriteBackRequest, WriteBackResponse
 from .storage import Storage
@@ -16,6 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth.router)
+app.include_router(media.router)
 storage = Storage(settings.database_url)
 
 
@@ -32,7 +33,9 @@ def health() -> dict:
 @app.post("/api/posts/extract", response_model=PostContent)
 async def extract(body: ExtractRequest, user: str = Depends(auth.get_current_user),
                   settings: Settings = Depends(get_settings)) -> PostContent:
-    return await instagram.fetch_post(body.url, proxy=settings.http_proxy_url, sessionid=settings.ig_sessionid)
+    post = await instagram.fetch_post(body.url, proxy=settings.http_proxy_url, sessionid=settings.ig_sessionid)
+    media.attach_proxy_urls(post.media, settings.secret_key)
+    return post
 
 
 @app.post("/api/posts/write-back", response_model=WriteBackResponse)

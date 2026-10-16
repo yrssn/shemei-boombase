@@ -12,7 +12,14 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (res) => res.data,
-  (err) => {
+  async (err) => {
+    if (err.response?.data instanceof Blob) {
+      try {
+        err.response.data = JSON.parse(await err.response.data.text())
+      } catch {
+        /* ignore */
+      }
+    }
     if (err.response?.status === 401) {
       clearSession()
       if (router.currentRoute.value.path !== '/login') router.push('/login')
@@ -26,4 +33,6 @@ export const login = (username, password) => http.post('/auth/login', { username
 export const extractPost = (url) => http.post('/posts/extract', { url })
 export const writeBack = (payload) => http.post('/posts/write-back', payload)
 export const fetchHistory = () => http.get('/posts/history')
+export const downloadMediaZip = (shortcode, items) =>
+  http.post('/media/zip', { shortcode, items }, { responseType: 'blob', timeout: 300000 })
 export const health = () => http.get('/health')

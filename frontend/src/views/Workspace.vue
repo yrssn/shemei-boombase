@@ -7,7 +7,7 @@
       </div>
       <el-menu :default-active="active" class="menu" background-color="transparent" text-color="#a9aeb8"
                active-text-color="#fff" @select="active = $event">
-        <el-menu-item index="extract"><el-icon><MagicStick /></el-icon><span>Instagram 文案抓取</span></el-menu-item>
+        <el-menu-item index="extract"><el-icon><MagicStick /></el-icon><span>Instagram 内容抓取</span></el-menu-item>
         <el-menu-item index="history"><el-icon><Tickets /></el-icon><span>写回记录</span></el-menu-item>
       </el-menu>
       <div class="aside-footer">
@@ -22,7 +22,7 @@
         <div class="crumb">
           <span class="crumb-root">内容矩阵管理发布系统</span>
           <el-icon class="crumb-sep"><ArrowRight /></el-icon>
-          <span>{{ active === 'extract' ? 'Instagram 文案抓取' : '写回记录' }}</span>
+          <span>{{ active === 'extract' ? 'Instagram 内容抓取' : '写回记录' }}</span>
         </div>
         <el-dropdown @command="onUserCommand">
           <span class="user">
@@ -43,7 +43,7 @@
           <el-card class="input-card">
             <div class="input-title">
               <h3>粘贴 Instagram 帖子链接</h3>
-              <span class="hint">支持 /p/、/reel/ 链接，回车即可抓取，几秒内文案出现在下方</span>
+              <span class="hint">支持 /p/、/reel/ 链接，回车即可抓取，几秒内文案、图片和视频出现在下方</span>
             </div>
             <div class="input-row">
               <el-input v-model.trim="url" size="large" clearable
@@ -51,7 +51,7 @@
                 <template #prefix><el-icon><Link /></el-icon></template>
               </el-input>
               <el-button type="primary" size="large" :loading="extracting" :disabled="!url" @click="extract">
-                <el-icon v-if="!extracting"><MagicStick /></el-icon>&nbsp;抓取文案
+                <el-icon v-if="!extracting"><MagicStick /></el-icon>&nbsp;抓取内容
               </el-button>
             </div>
           </el-card>
@@ -81,6 +81,36 @@
                 </el-alert>
                 <el-alert v-if="!wecomConfigured" type="warning" show-icon :closable="false" class="alert"
                           title="后端尚未配置企业微信参数，写回功能暂不可用（见 backend/.env.example）" />
+              </el-card>
+
+              <el-card class="media-card">
+                <template #header>
+                  <div class="card-head">
+                    <span>图片 / 视频 <span class="count">{{ mediaSummary }}</span></span>
+                    <el-button type="primary" plain :loading="zipping" :disabled="!post.media.length" @click="downloadAll">
+                      <el-icon v-if="!zipping"><Download /></el-icon>&nbsp;全部下载（ZIP）
+                    </el-button>
+                  </div>
+                </template>
+                <div v-if="post.media.length" class="media-grid">
+                  <div v-for="(m, i) in post.media" :key="m.url" class="media-tile">
+                    <video v-if="m.type === 'video'" :src="m.proxy_url" :poster="m.thumbnail_proxy_url || undefined"
+                           controls preload="metadata" class="media-el" />
+                    <el-image v-else :src="m.proxy_url" :preview-src-list="imagePreviewList"
+                              :initial-index="imagePreviewList.indexOf(m.proxy_url)" fit="cover" class="media-el"
+                              preview-teleported loading="lazy" />
+                    <div class="media-bar">
+                      <el-tag size="small" :type="m.type === 'video' ? 'danger' : 'primary'" effect="light">
+                        {{ m.type === 'video' ? '视频' : '图片' }} {{ i + 1 }}
+                      </el-tag>
+                      <span v-if="m.width" class="muted">{{ m.width }}×{{ m.height }}</span>
+                      <el-link :href="m.download_url" :download="m.filename" type="primary" :underline="false">
+                        <el-icon><Download /></el-icon>&nbsp;下载
+                      </el-link>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="muted">未抓取到图片或视频</p>
               </el-card>
             </el-col>
             <el-col :span="8">
@@ -144,10 +174,10 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { extractPost, fetchHistory, health, writeBack } from '../api/http'
+import { downloadMediaZip, extractPost, fetchHistory, health, writeBack } from '../api/http'
 import { clearSession, getUsername } from '../api/auth'
 
 const router = useRouter()
@@ -161,6 +191,15 @@ const wroteUrl = ref('')
 const history = ref([])
 const loadingHistory = ref(false)
 const wecomConfigured = ref(true)
+const zipping = ref(false)
+
+const imagePreviewList = computed(() =>
+  (post.value?.media || []).filter((m) => m.type === 'image').map((m) => m.proxy_url))
+const mediaSummary = computed(() => {
+  const media = post.value?.media || []
+  const videos = media.filter((m) => m.type === 'video').length
+  return `${media.length - videos} 张图片 · ${videos} 个视频`
+})
 
 const sentimentType = (s) => ({ positive: 'success', negative: 'danger' }[s] || 'info')
 const sentimentTypeByLabel = (l) => ({ 积极: 'success', 消极: 'danger' }[l] || 'info')
@@ -172,7 +211,7 @@ async function extract() {
   post.value = null
   try {
     post.value = await extractPost(url.value)
-    ElMessage.success('文案抓取成功')
+    ElMessage.success(`抓取成功：文案 ${post.value.caption.length} 字，${mediaSummary.value}`)
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -192,6 +231,22 @@ async function copy() {
     document.body.removeChild(ta)
   }
   ElMessage.success('文案已复制到剪贴板')
+}
+
+async function downloadAll() {
+  zipping.value = true
+  try {
+    const blob = await downloadMediaZip(post.value.shortcode, post.value.media)
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${post.value.shortcode}_media.zip`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000)
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    zipping.value = false
+  }
 }
 
 async function write() {
@@ -278,5 +333,10 @@ onMounted(async () => {
 .section-title { font-weight: 600; font-size: 13px; margin: 18px 0 10px; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .muted { color: #8f959e; font-size: 12px; }
+.media-card { margin-top: 16px; }
+.media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.media-tile { border: 1px solid #e5e6eb; border-radius: 8px; overflow: hidden; background: #fafafa; }
+.media-el { display: block; width: 100%; aspect-ratio: 4 / 5; object-fit: cover; background: #000; }
+.media-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; }
 .score { margin-left: 8px; }
 </style>
