@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     wecom_field_operator: str = "提交人"
 
     http_proxy_url: str = ""
-    database_path: str = "./data.db"
+    database_url: str = "sqlite:///./data.db"
 
     @property
     def users(self) -> dict[str, str]:

@@ -7,7 +7,7 @@ Instagram 帖子文案抓取与企业微信文档写回（MVP）。
 - 一键写回企业微信智能表格，运营同事可在同一行做二次创作
 - 简单 JWT 登录校验
 
-技术栈：前端 Vue 3 + Vite + vue-router + axios；后端 FastAPI + PyJWT + httpx + SQLite。
+技术栈：前端 Vue 3 + Vite + vue-router + axios；后端 FastAPI + PyJWT + httpx + SQLAlchemy + MySQL。
 
 ## 目录结构
 
@@ -22,7 +22,7 @@ frontend/  Vue 3 前端（Vite）
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # 按需修改 SECRET_KEY、APP_USERS、企业微信参数
+cp .env.example .env        # 按需修改 SECRET_KEY、APP_USERS、DATABASE_URL、企业微信参数
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -47,6 +47,14 @@ npm install
 npm run dev        # http://localhost:5173 ，/api 代理到 http://localhost:8000
 npm run build      # 产物在 frontend/dist
 ```
+
+## 数据库（MySQL）
+
+```sql
+CREATE DATABASE boombase DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+在 `backend/.env` 中配置 `DATABASE_URL=mysql+pymysql://用户名:密码@127.0.0.1:3306/boombase?charset=utf8mb4`，服务启动时会自动建表（`history`）。本地没有 MySQL 时可临时改为 `sqlite:///./data.db`。
 
 ## 企业微信写回配置
 

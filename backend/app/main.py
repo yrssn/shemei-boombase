@@ -16,7 +16,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth.router)
-storage = Storage(settings.database_path)
+storage = Storage(settings.database_url)
+
+
+@app.on_event("startup")
+def init_db() -> None:
+    storage.init_db()
 
 
 @app.get("/api/health")
