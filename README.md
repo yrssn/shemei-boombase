@@ -68,4 +68,6 @@ CREATE DATABASE boombase DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_c
 
 ## 说明
 
-- Instagram 抓取使用公开的 `/p/<shortcode>/embed/captioned/` 页面，失败时回退到帖子页 `og:description`；私密账号或被风控时会返回错误提示。服务器无法直连 Instagram 时可配置 `HTTP_PROXY_URL`。
+- Instagram 抓取顺序：`IG_SESSIONID` 登录态接口（可选）→ `/embed/captioned/` 页面（爬虫 UA）→ 浏览器 UA → 帖子页 `og:description`。
+- 遇到「抓取文案失败」多为 Instagram 风控，建议在 `backend/.env` 填 `IG_SESSIONID`：浏览器登录 instagram.com，F12 → Application → Cookies → 复制 `sessionid` 的值。cookie 过期后重新复制即可。
+- 服务器无法直连 Instagram 时可配置 `HTTP_PROXY_URL`。

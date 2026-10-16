@@ -32,7 +32,7 @@ def health() -> dict:
 @app.post("/api/posts/extract", response_model=PostContent)
 async def extract(body: ExtractRequest, user: str = Depends(auth.get_current_user),
                   settings: Settings = Depends(get_settings)) -> PostContent:
-    return await instagram.fetch_post(body.url, proxy=settings.http_proxy_url)
+    return await instagram.fetch_post(body.url, proxy=settings.http_proxy_url, sessionid=settings.ig_sessionid)
 
 
 @app.post("/api/posts/write-back", response_model=WriteBackResponse)

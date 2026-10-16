@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     wecom_field_operator: str = "提交人"
 
     http_proxy_url: str = ""
+    ig_sessionid: str = ""
     database_url: str = "sqlite:///./data.db"
 
     @property

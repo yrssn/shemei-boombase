@@ -20,6 +20,17 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+# embed 页面对搜索引擎爬虫 UA 不弹登录墙，是目前最稳的未登录抓取方式
+BOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+IG_APP_ID = "936619743392459"
+SHORTCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
+def shortcode_to_media_id(shortcode: str) -> int:
+    media_id = 0
+    for ch in shortcode:
+        media_id = media_id * 64 + SHORTCODE_ALPHABET.index(ch)
+    return media_id
 
 
 def normalize_url(url: str) -> str:
@@ -140,7 +151,22 @@ async def _fetch_graphql(client: httpx.AsyncClient, shortcode: str) -> tuple[str
     return media.get("owner", {}).get("username", ""), caption
 
 
-async def fetch_post(url: str, proxy: str = "") -> PostContent:
+async def _fetch_with_session(client: httpx.AsyncClient, shortcode: str, sessionid: str) -> tuple[str, str]:
+    """登录态接口：需要浏览器 cookie 中的 sessionid，最可靠。"""
+    media_id = shortcode_to_media_id(shortcode)
+    resp = await client.get(
+        f"https://www.instagram.com/api/v1/media/{media_id}/info/",
+        headers={"User-Agent": UA, "X-IG-App-ID": IG_APP_ID, "Accept": "*/*"},
+        cookies={"sessionid": sessionid},
+    )
+    if resp.status_code >= 400:
+        raise httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=resp.request, response=resp)
+    item = resp.json()["items"][0]
+    caption = (item.get("caption") or {}).get("text", "") or ""
+    return item.get("user", {}).get("username", ""), caption.strip()
+
+
+async def fetch_post(url: str, proxy: str = "", sessionid: str = "") -> PostContent:
     url = normalize_url(url)
     headers = {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"}
     author = caption = source = ""
@@ -151,12 +177,22 @@ async def fetch_post(url: str, proxy: str = "") -> PostContent:
         if is_share_link(url):
             url = await resolve_share_link(client, url)
         shortcode = parse_shortcode(url)
-        for candidate, parser, name in (
-            (f"https://www.instagram.com/p/{shortcode}/embed/captioned/", _parse_embed, "embed"),
-            (f"https://www.instagram.com/p/{shortcode}/", _parse_og, "og"),
-        ):
+        if sessionid:
             try:
-                resp = await client.get(candidate)
+                author, caption = await _fetch_with_session(client, shortcode, sessionid)
+                source = "session" if caption else ""
+            except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+                errors.append(f"session: {exc.__class__.__name__}（sessionid 可能已失效）")
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        for candidate, parser, name, ua in (
+            (embed_url, _parse_embed, "embed", BOT_UA),
+            (embed_url, _parse_embed, "embed-browser", UA),
+            (f"https://www.instagram.com/p/{shortcode}/", _parse_og, "og", UA),
+        ):
+            if caption:
+                break
+            try:
+                resp = await client.get(candidate, headers={"User-Agent": ua})
                 if resp.status_code >= 400:
                     errors.append(f"{name}: HTTP {resp.status_code}")
                     continue
