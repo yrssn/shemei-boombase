@@ -14,25 +14,54 @@ from .schemas import PostContent
 from .sentiment import analyze
 
 SHORTCODE_RE = re.compile(r"^/(?:[\w.]+/)?(p|reel|reels|tv)/([A-Za-z0-9_-]+)/?")
+SHARE_RE = re.compile(r"^/share/(?:p/|reel/|reels/)?[A-Za-z0-9_-]+/?")
+IG_HOSTS = ("instagram.com", "instagr.am")
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
 
-def parse_shortcode(url: str) -> str:
+def normalize_url(url: str) -> str:
     url = url.strip()
+    m = re.search(r"https?://\S+", url)
+    if m:
+        url = m.group(0).rstrip("，。、,.;)]》」")
     if not url:
         raise HTTPException(400, "请输入 Instagram 帖子链接")
     if not url.startswith("http"):
         url = "https://" + url
     parsed = urlparse(url)
-    if "instagram.com" not in parsed.netloc:
+    if not any(h in parsed.netloc for h in IG_HOSTS):
         raise HTTPException(400, "只支持 instagram.com 的帖子链接")
+    return url
+
+
+def is_share_link(url: str) -> bool:
+    return bool(SHARE_RE.match(urlparse(url).path))
+
+
+def parse_shortcode(url: str) -> str:
+    parsed = urlparse(normalize_url(url))
     match = SHORTCODE_RE.match(parsed.path)
     if not match:
         raise HTTPException(400, "无法识别帖子链接，示例：https://www.instagram.com/p/XXXXXXXX/")
     return match.group(2)
+
+
+async def resolve_share_link(client: httpx.AsyncClient, url: str) -> str:
+    """分享短链 /share/xxx 会 302 到真实帖子地址，跟随跳转后再解析。"""
+    try:
+        resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"解析分享链接失败：{exc.__class__.__name__}")
+    final = str(resp.url)
+    if SHORTCODE_RE.match(urlparse(final).path):
+        return final
+    m = re.search(r'instagram\.com/(?:p|reel|reels|tv)/[A-Za-z0-9_-]+', resp.text)
+    if m:
+        return "https://www." + m.group(0) + "/"
+    raise HTTPException(400, "分享链接无法解析出帖子地址，请在浏览器打开后复制地址栏的完整链接")
 
 
 def _html_to_text(fragment: str) -> str:
@@ -112,13 +141,16 @@ async def _fetch_graphql(client: httpx.AsyncClient, shortcode: str) -> tuple[str
 
 
 async def fetch_post(url: str, proxy: str = "") -> PostContent:
-    shortcode = parse_shortcode(url)
+    url = normalize_url(url)
     headers = {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"}
     author = caption = source = ""
     errors: list[str] = []
     async with httpx.AsyncClient(
         headers=headers, timeout=15, follow_redirects=True, proxy=proxy or None
     ) as client:
+        if is_share_link(url):
+            url = await resolve_share_link(client, url)
+        shortcode = parse_shortcode(url)
         for candidate, parser, name in (
             (f"https://www.instagram.com/p/{shortcode}/embed/captioned/", _parse_embed, "embed"),
             (f"https://www.instagram.com/p/{shortcode}/", _parse_og, "og"),
