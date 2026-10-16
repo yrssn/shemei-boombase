@@ -1,1 +1,63 @@
-"# shemei-boombase" 
+# shemei-boombase · 内容矩阵管理发布系统
+
+Instagram 帖子文案抓取与企业微信文档写回（MVP）。
+
+- 粘贴 Instagram 帖子链接 → 几秒内抓取原始文案（保留换行、不乱码）
+- 文案情绪判断（积极 / 中性 / 消极）、话题标签提取、一键复制
+- 一键写回企业微信智能表格，运营同事可在同一行做二次创作
+- 简单 JWT 登录校验
+
+技术栈：前端 Vue 3 + Vite + vue-router + axios；后端 FastAPI + PyJWT + httpx + SQLite。
+
+## 目录结构
+
+```
+backend/   FastAPI 服务（app/main.py 入口）
+frontend/  Vue 3 前端（Vite）
+```
+
+## 后端启动
+
+```bash
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # 按需修改 SECRET_KEY、APP_USERS、企业微信参数
+uvicorn app.main:app --reload --port 8000
+```
+
+接口（除登录外均需 `Authorization: Bearer <token>`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/auth/login` | 登录，返回 JWT |
+| GET | `/api/auth/me` | 当前用户 |
+| POST | `/api/posts/extract` | `{ "url": "..." }` 抓取文案、情绪、标签 |
+| POST | `/api/posts/write-back` | 写回企业微信智能表格并记录历史 |
+| GET | `/api/posts/history` | 最近写回记录 |
+| GET | `/api/health` | 健康检查（含是否已配置企业微信） |
+
+默认账号来自 `.env` 的 `APP_USERS`（示例：`admin:admin123`）。
+
+## 前端启动
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173 ，/api 代理到 http://localhost:8000
+npm run build      # 产物在 frontend/dist
+```
+
+## 企业微信写回配置
+
+在 `backend/.env` 中填写：
+
+- `WECOM_CORP_ID` / `WECOM_CORP_SECRET`：企业 ID 与自建应用 Secret（应用需有「文档」权限，且智能表格已对应用授权）
+- `WECOM_DOCID` / `WECOM_SHEET_ID`：智能表格文档 ID 与子表 ID
+- `WECOM_FIELD_*`：智能表格列标题，默认为「帖子链接 / 原始文案 / 作者 / 情绪 / 提交人」，需与表格中的列名一致
+
+未配置时抓取、复制功能正常，写回按钮会提示未配置。
+
+## 说明
+
+- Instagram 抓取使用公开的 `/p/<shortcode>/embed/captioned/` 页面，失败时回退到帖子页 `og:description`；私密账号或被风控时会返回错误提示。服务器无法直连 Instagram 时可配置 `HTTP_PROXY_URL`。
