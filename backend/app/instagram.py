@@ -4,6 +4,7 @@
 """
 import html
 import json
+import logging
 import re
 from urllib.parse import urlparse
 
@@ -13,6 +14,9 @@ from fastapi import HTTPException
 from .schemas import MediaItem, PostContent
 from .sentiment import analyze
 
+logger = logging.getLogger("uvicorn.error")
+NETWORK_ERRORS = ("ConnectError", "ConnectTimeout", "ReadTimeout", "ProxyError", "RemoteProtocolError", "ReadError")
+NETWORK_HINT = "请在 backend/.env 配置 HTTP_PROXY_URL（如 Clash 填 http://127.0.0.1:7890，v2rayN 填 http://127.0.0.1:10809）后重启后端"
 SHORTCODE_RE = re.compile(r"^/(?:[\w.]+/)?(p|reel|reels|tv)/([A-Za-z0-9_-]+)/?")
 SHARE_RE = re.compile(r"^/share/(?:p/|reel/|reels/)?[A-Za-z0-9_-]+/?")
 IG_HOSTS = ("instagram.com", "instagr.am")
@@ -65,7 +69,8 @@ async def resolve_share_link(client: httpx.AsyncClient, url: str) -> str:
     try:
         resp = await client.get(url)
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"解析分享链接失败：{exc.__class__.__name__}")
+        logger.warning("解析分享链接失败 %s：%r", url, exc)
+        raise HTTPException(502, f"解析分享链接失败：{exc.__class__.__name__}，{NETWORK_HINT}")
     final = str(resp.url)
     if SHORTCODE_RE.match(urlparse(final).path):
         return final
@@ -289,6 +294,9 @@ async def fetch_post(url: str, proxy: str = "", sessionid: str = "") -> PostCont
         media, media_source = og_media, "og"
     if not caption and not media:
         detail = "；".join(errors) if errors else "帖子可能为私密账号、链接无效或当前服务器 IP 被 Instagram 限制（可配置 HTTP_PROXY_URL）"
+        logger.warning("抓取失败 %s（代理：%s）：%s", url, proxy or "未配置", detail)
+        if errors and all(any(n in e for n in NETWORK_ERRORS) for e in errors):
+            raise HTTPException(502, f"无法连接 Instagram，{NETWORK_HINT if not proxy else f'当前代理 {proxy} 不可用，请确认代理软件已开启且端口正确'}（{detail}）")
         raise HTTPException(502, f"抓取失败：{detail}")
     for idx, item in enumerate(media, start=1):
         ext = "mp4" if item.type == "video" else "jpg"
